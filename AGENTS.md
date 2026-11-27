@@ -22,7 +22,7 @@ account-switch is a Claude Code plugin. It saves several claude.ai logins as nam
 
 | Layer | Choice |
 |---|---|
-| Language | Python 3.9 or newer, standard library only |
+| Language | Python 3.10 or newer, standard library only |
 | Test | pytest |
 | CI | GitHub Actions |
 

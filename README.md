@@ -9,7 +9,7 @@ Switch Claude Code between saved claude.ai logins (Pro, Team, Max). Switch every
 /plugin install account-switch@account-switch-marketplace
 ```
 
-Python 3.9 or newer is the only requirement. The plugin uses the standard library.
+Python 3.10 or newer is the only requirement. The plugin uses the standard library.
 
 ## Set up your accounts
 
