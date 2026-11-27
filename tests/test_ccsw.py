@@ -34,7 +34,7 @@ def login(home, email, token, org="claude_team"):
 
 
 def ccsw(home, *args, **env):
-    e = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "CCSW"))}
+    e = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "CCSW", "XDG_"))}
     e.update(HOME=str(home), CCSW_AUTO_SYNC_MODELS="false", **env)
     return subprocess.run([sys.executable, str(CCSW), *args], env=e, capture_output=True, text=True)
 
