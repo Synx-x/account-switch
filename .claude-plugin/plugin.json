@@ -1,0 +1,30 @@
+{
+  "name": "account-switch",
+  "displayName": "Account Switch",
+  "version": "0.1.0",
+  "description": "Switch Claude Code between saved claude.ai logins (Pro, Team, Max), globally or per session, with a live /model list for the active account.",
+  "author": { "name": "Synx-x", "url": "https://github.com/Synx-x" },
+  "homepage": "https://github.com/Synx-x/account-switch",
+  "repository": "https://github.com/Synx-x/account-switch",
+  "license": "MIT",
+  "keywords": ["accounts", "auth", "pro", "team", "model-picker", "multi-account"],
+  "network": { "hosts": ["api.anthropic.com"] },
+  "userConfig": {
+    "auto_sync_models": {
+      "type": "boolean",
+      "title": "Sync /model list at session start",
+      "description": "Rewrite the modelPicker key in settings.json from Anthropic's live model list for the active account. A one-time backup is kept as settings.json.ccsw-bak.",
+      "default": true
+    },
+    "extra_models_url": {
+      "type": "string",
+      "title": "Extra models URL (optional)",
+      "description": "An OpenAI-style /v1/models URL whose models are appended to the picker, for example a local gateway. Leave empty for none."
+    },
+    "extra_models_owners": {
+      "type": "string",
+      "title": "Extra models owner filter (optional)",
+      "description": "Comma-separated owned_by values to keep from the extra models URL. Empty keeps every model."
+    }
+  }
+}

@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""ccsw: switch Claude Code between saved claude.ai logins, globally or per session.
+
+  ccsw status                         live login, active profile, saved profiles
+  ccsw save <name>                    snapshot the live login as <name>
+  ccsw use <name>                     make <name> the live login for every session
+  ccsw use <name> --session [--open]  leave the live login alone; print (and copy) the
+                                      command that resumes THIS conversation on <name>
+  ccsw run <name> [claude args...]    launch claude on <name> only (per-session)
+  ccsw launchers                      write ~/.local/bin/claude-<name> for each profile
+  ccsw models [--quiet]               rebuild the /model list for the live account
+  ccsw remove <name>                  delete a profile and its isolated directory
+
+Claude Code keeps one login in <config dir>/.credentials.json plus an `oauthAccount`
+record in .claude.json. A profile is a copy of both. Per-session isolation gives each
+profile its own config dir (~/.claude-<name>) that symlinks everything else back to
+the main one. Standard library only.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+
+HOME = Path.home()
+MAIN_DIR = Path(os.environ.get("CCSW_SOURCE_DIR") or HOME / ".claude")
+LIVE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or MAIN_DIR)
+CREDS = LIVE_DIR / ".credentials.json"
+LIVE_JSON = LIVE_DIR / ".claude.json" if os.environ.get("CLAUDE_CONFIG_DIR") else HOME / ".claude.json"
+MAIN_JSON = HOME / ".claude.json"
+STORE = Path(os.environ.get("CCSW_HOME") or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "account-switch")
+PROFILES = STORE / "profiles"
+ACTIVE = STORE / "active"
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,23}")
+# Kept out of an isolated dir: login state and per-process runtime files.
+ISOLATE_SKIP = {".credentials.json", ".credentials.lock", ".oauth_refresh.lock", "daemon", "daemon.log",
+                "daemon-auth-cooldown", "daemon-auth-status.json"}
+PLAN_LABELS = {"claude_team": "Team", "claude_pro": "Pro", "claude_max": "Max", "claude_enterprise": "Enterprise"}
+
+
+def die(msg):
+    sys.exit(f"ccsw: {msg}")
+
+
+def opt(key, default=""):
+    """Plugin userConfig reaches hooks as CLAUDE_PLUGIN_OPTION_<KEY>; CCSW_<KEY> works anywhere."""
+    return os.environ.get(f"CLAUDE_PLUGIN_OPTION_{key}") or os.environ.get(f"CCSW_{key}") or default
+
+
+def atomic_write(path, text, mode):
+    path = Path(path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".ccsw.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def live_login():
+    """Return (claudeAiOauth, oauthAccount) of the live login, or die with advice."""
+    if sys.platform == "darwin" and not CREDS.exists():
+        die("on macOS Claude Code keeps the login in the Keychain, which ccsw does not touch yet.")
+    try:
+        oauth = read_json(CREDS).get("claudeAiOauth")
+    except (OSError, ValueError):
+        oauth = None
+    acct = read_json(LIVE_JSON).get("oauthAccount") if LIVE_JSON.exists() else None
+    if not oauth or not acct:
+        die("no claude.ai login found. Run `claude auth login` first.")
+    return oauth, acct
+
+
+def profile_file(name):
+    if not NAME_RE.fullmatch(name):
+        die(f"bad profile name {name!r}: use a-z 0-9 - _ (max 24, start with a letter or digit)")
+    return PROFILES / f"{name}.json"
+
+
+def names():
+    return sorted(p.stem for p in PROFILES.glob("*.json")) if PROFILES.exists() else []
+
+
+def active_name():
+    try:
+        return ACTIVE.read_text().strip() or None
+    except OSError:
+        return None
+
+
+def plan_label(acct):
+    kind = (acct or {}).get("organizationType") or ""
+    return PLAN_LABELS.get(kind, kind or "Personal")
+
+
+def describe(acct):
+    return f"{acct.get('emailAddress')} · {plan_label(acct)} · {acct.get('organizationName')}"
+
+
+def iso_dir(name):
+    return HOME / f".claude-{name}"
+
+
+def cmd_status():
+    try:
+        _, acct = live_login()
+        print(f"live login : {describe(acct)}")
+    except SystemExit:
+        print("live login : none")
+    print(f"active tag : {active_name() or 'unset'}")
+    print(f"profiles   : {', '.join(names()) or 'none'}")
+
+
+def cmd_save(name):
+    oauth, acct = live_login()
+    path = profile_file(name)
+    STORE.mkdir(parents=True, exist_ok=True)
+    os.chmod(STORE, 0o700)
+    PROFILES.mkdir(exist_ok=True)
+    atomic_write(path, json.dumps({"claudeAiOauth": oauth, "oauthAccount": acct}, indent=2) + "\n", 0o600)
+    atomic_write(ACTIVE, name + "\n", 0o600)
+    print(f"saved '{name}': {describe(acct)}")
+
+
+def load_profile(name):
+    path = profile_file(name)
+    if not path.exists():
+        die(f"no profile '{name}'. Saved: {', '.join(names()) or 'none'}. "
+            f"Sign in with `claude auth login`, then `ccsw save {name}`.")
+    blob = read_json(path)
+    cred = iso_dir(name) / ".credentials.json"
+    if cred.exists():  # an isolated session may have rotated the refresh token since the save
+        try:
+            blob["claudeAiOauth"] = read_json(cred)["claudeAiOauth"]
+        except (OSError, ValueError, KeyError):
+            pass
+    return blob
+
+
+def cmd_use(name):
+    blob = load_profile(name)
+    prev = active_name()
+    if prev and prev != name and profile_file(prev).exists():
+        try:  # Claude Code rotates refresh tokens: store the live pair back before swapping away
+            oauth, acct = live_login()
+            if acct.get("accountUuid") == read_json(profile_file(prev))["oauthAccount"].get("accountUuid"):
+                atomic_write(profile_file(prev), json.dumps({"claudeAiOauth": oauth, "oauthAccount": acct}, indent=2) + "\n", 0o600)
+        except SystemExit:
+            pass
+    creds = read_json(CREDS) if CREDS.exists() else {}
+    creds["claudeAiOauth"] = blob["claudeAiOauth"]
+    atomic_write(CREDS, json.dumps(creds), 0o600)
+    cj = read_json(LIVE_JSON) if LIVE_JSON.exists() else {}
+    cj["oauthAccount"] = blob["oauthAccount"]
+    mode = LIVE_JSON.resolve().stat().st_mode & 0o777 if LIVE_JSON.exists() else 0o600
+    atomic_write(LIVE_JSON, json.dumps(cj, indent=2), mode)
+    atomic_write(ACTIVE, name + "\n", 0o600)
+    print(f"active: '{name}' → {describe(blob['oauthAccount'])}")
+    cmd_models(quiet=True)
+
+
+def isolate(name):
+    """Build ~/.claude-<name>: its own login, everything else symlinked to the main config dir."""
+    blob = load_profile(name)
+    d = iso_dir(name)
+    d.mkdir(mode=0o700, exist_ok=True)
+    for item in MAIN_DIR.iterdir():
+        if item.name in ISOLATE_SKIP or item.name.startswith(".storage-write"):
+            continue
+        link = d / item.name
+        if not (link.exists() or link.is_symlink()):
+            try:
+                link.symlink_to(item)
+            except OSError as exc:
+                die(f"cannot symlink {link} ({exc}). On Windows, enable Developer Mode for symlinks.")
+    cred = d / ".credentials.json"
+    if not cred.exists():  # never overwrite: Claude Code rotates the token in place
+        atomic_write(cred, json.dumps({"claudeAiOauth": blob["claudeAiOauth"]}), 0o600)
+    cj = d / ".claude.json"
+    if not cj.exists():
+        base = read_json(MAIN_JSON) if MAIN_JSON.exists() else {}
+        base["oauthAccount"] = blob["oauthAccount"]
+        atomic_write(cj, json.dumps(base, indent=2), 0o600)
+    return d
+
+
+def copy_text(text):
+    for tool in (["wl-copy"], ["pbcopy"], ["xclip", "-selection", "clipboard"], ["clip"]):
+        if shutil.which(tool[0]):
+            # DEVNULL matters: wl-copy leaves a daemon that would hold the caller's output pipe open.
+            subprocess.run(tool, input=text, text=True, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+    return False
+
+
+def cmd_handoff(name, open_pane):
+    d = isolate(name)
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    cmd = f"cd {os.getcwd()} && CLAUDE_CONFIG_DIR={d} claude" + (f" --resume {sid}" if sid else " --continue")
+    print(f"session-only: '{name}' → {describe(load_profile(name)['oauthAccount'])}; live login untouched")
+    if open_pane and os.environ.get("HERDR_PANE_ID") and shutil.which("herdr"):
+        out = subprocess.run(["herdr", "pane", "split", os.environ["HERDR_PANE_ID"], "--direction", "right",
+                              "--cwd", os.getcwd()], capture_output=True, text=True)
+        try:
+            pane = json.loads(out.stdout)["result"]["pane"]["pane_id"]
+        except (ValueError, KeyError, TypeError):
+            pane = ""
+        if out.returncode == 0 and pane:
+            subprocess.run(["herdr", "pane", "run", pane, cmd], check=False)
+            print(f"opened herdr pane {pane}")
+            return
+        print("herdr split failed; falling back to the printed command.")
+    print("copied to clipboard:" if copy_text(cmd) else "run this:")
+    print(cmd)
+
+
+def cmd_run(name, args):
+    d = isolate(name)
+    os.environ["CLAUDE_CONFIG_DIR"] = str(d)
+    os.execvp("claude", ["claude", *args])
+
+
+def cmd_launchers():
+    if os.name == "nt":
+        die("launchers are POSIX shell scripts; on Windows use `ccsw run <name>`.")
+    bindir = HOME / ".local" / "bin"
+    bindir.mkdir(parents=True, exist_ok=True)
+    for name in names():
+        script = bindir / f"claude-{name}"
+        script.write_text(f'#!/bin/sh\nexec python3 "{Path(__file__).resolve()}" run {name} "$@"\n')
+        script.chmod(0o755)
+        print(f"wrote {script}")
+
+
+def cmd_remove(name):
+    path = profile_file(name)
+    if not path.exists():
+        die(f"no profile '{name}'.")
+    path.unlink()
+    d = iso_dir(name)
+    if d.is_dir() and not d.is_symlink():
+        shutil.rmtree(d)  # rmtree unlinks symlinks without following them
+    if active_name() == name:
+        ACTIVE.unlink(missing_ok=True)
+    print(f"removed '{name}' and {d}")
+
+
+def http_models(url, headers):
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.load(resp)["data"]
+
+
+def cmd_models(quiet=False):
+    """Rebuild modelPicker.options in settings.json from Anthropic's live /v1/models."""
+    if opt("AUTO_SYNC_MODELS", "true").lower() in ("0", "false", "no") and quiet:
+        return
+    try:
+        oauth, acct = live_login()
+    except SystemExit as exc:
+        if not quiet:
+            raise
+        return print(f"ccsw: model list unchanged ({exc})")
+    tag = active_name() or plan_label(acct)
+    settings_path = LIVE_DIR / "settings.json"
+    settings = read_json(settings_path) if settings_path.exists() else {}
+    picker = settings.get("modelPicker") or {}
+    current = [r for r in picker.get("options", []) if isinstance(r, dict) and r.get("model")]
+    try:
+        data = http_models("https://api.anthropic.com/v1/models?limit=100",
+                           {"Authorization": f"Bearer {oauth['accessToken']}", "anthropic-version": "2023-06-01",
+                            "anthropic-beta": "oauth-2025-04-20"})
+        rows = [{"model": m["id"], "label": m.get("display_name") or m["id"], "description": f"{tag} · {m['id']}"}
+                for m in data if m.get("id")]
+    except Exception as exc:
+        print(f"ccsw: Anthropic model list unavailable ({type(exc).__name__}); keeping the old rows")
+        rows = [r for r in current if not r.get("extra")]
+    extra_url = opt("EXTRA_MODELS_URL")
+    extra = [r for r in current if r.get("extra")]
+    if extra_url:
+        owners = {o.strip() for o in opt("EXTRA_MODELS_OWNERS").split(",") if o.strip()}
+        keep = {r["model"]: r for r in current}
+        try:
+            ids = [m["id"] for m in http_models(extra_url, {}) if m.get("id") and (not owners or m.get("owned_by") in owners)]
+            extra = [keep.get(i) or {"model": i, "label": i, "description": f"extra · {i}", "extra": True} for i in dict.fromkeys(ids)]
+        except Exception as exc:
+            print(f"ccsw: extra model list unavailable ({type(exc).__name__}); keeping the old extra rows")
+    options = rows + extra
+    if not options:
+        return print("ccsw: no models from any source; list unchanged")
+    new = {"options": options, "replaceBuiltInOptions": bool(rows)}
+    if new == picker:
+        return None if quiet else print("ccsw: model list up to date")
+    backup = settings_path.with_name(settings_path.name + ".ccsw-bak")
+    if settings_path.exists() and not backup.exists():
+        shutil.copy2(settings_path, backup)
+    settings["modelPicker"] = new
+    atomic_write(settings_path, json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+                 settings_path.stat().st_mode & 0o777 if settings_path.exists() else 0o600)
+    print(f"ccsw: model list synced, {len(rows)} Claude + {len(extra)} extra ({tag})")
+    return None
+
+
+def main(argv):
+    cmd, *rest = argv or ["status"]
+    flags = {r for r in rest if r.startswith("--")}
+    pos = [r for r in rest if not r.startswith("--")]
+    if cmd == "status":
+        cmd_status()
+    elif cmd == "list":
+        print("\n".join(names()) or "none")
+    elif cmd == "save" and len(pos) == 1:
+        cmd_save(pos[0])
+    elif cmd == "use" and len(pos) == 1:
+        cmd_handoff(pos[0], "--open" in flags) if "--session" in flags else cmd_use(pos[0])
+    elif cmd == "run" and rest:
+        cmd_run(rest[0], rest[1:])
+    elif cmd == "launchers":
+        cmd_launchers()
+    elif cmd == "models":
+        cmd_models(quiet="--quiet" in flags)
+    elif cmd == "remove" and len(pos) == 1:
+        cmd_remove(pos[0])
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

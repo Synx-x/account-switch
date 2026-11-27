@@ -1,0 +1,11 @@
+{
+  "name": "account-switch-marketplace",
+  "owner": { "name": "Synx-x" },
+  "plugins": [
+    {
+      "name": "account-switch",
+      "source": "./",
+      "description": "Switch Claude Code between saved claude.ai logins, globally or per session."
+    }
+  ]
+}
