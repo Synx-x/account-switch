@@ -34,7 +34,7 @@ A running session cannot change its own login. So `--session` starts a second pr
 
 ### Per-session launchers
 
-`ccsw launchers` writes `~/.local/bin/claude-<name>` for each profile. Run `claude-team` and that session stays on `team` whatever the other sessions do.
+`ccsw launchers` writes `~/.local/bin/claude-NAME` for each profile. Run `claude-team` and that session stays on `team` whatever the other sessions do.
 
 Inside Claude Code, `bin/ccsw` is on the Bash tool's PATH. Ask Claude to run `ccsw launchers`. In your own shell, run `python3 <plugin dir>/bin/ccsw launchers` once.
 
@@ -44,7 +44,7 @@ A profile is a copy of Claude Code's single login. It holds the tokens from `<co
 
 - **Global switch:** `ccsw use` writes the profile into the live files. Claude Code reloads `.credentials.json` when its modified time changes.
 - **Rotated tokens:** Claude Code rotates refresh tokens. So `use` saves the live login back into its profile before swapping away. It also prefers the fresher token from an isolated directory.
-- **Per-session isolation:** `~/.claude-<name>` holds its own login. It symlinks everything else (settings, hooks, plugins, history) to `~/.claude`. `CLAUDE_CONFIG_DIR` points a process at it.
+- **Per-session isolation:** `~/.claude-NAME` holds its own login. It symlinks everything else (settings, hooks, plugins, history) to `~/.claude`. `CLAUDE_CONFIG_DIR` points a process at it.
 - **Model list:** a session-start hook asks `api.anthropic.com/v1/models` with the live token. It writes the result to `modelPicker` in `settings.json`. Rows read `<profile> · <model id>`. A one-time backup is kept as `settings.json.ccsw-bak`. Turn this off with the plugin setting `auto_sync_models`.
 - **Extra models:** set `extra_models_url` to any OpenAI-style `/v1/models` URL, such as a local gateway. Its models are appended to the picker. `extra_models_owners` filters them by `owned_by`.
 
@@ -78,7 +78,7 @@ account-switch/
 ## Limits
 
 - **macOS:** Claude Code keeps the login in the Keychain. ccsw refuses with a message and does not touch it.
-- **Windows:** the global switch works on the credentials file. Isolation needs symlinks, so enable Developer Mode. Launchers are POSIX only, so use `ccsw run <name>` there.
+- **Windows:** the global switch works on the credentials file. Isolation needs symlinks, so enable Developer Mode. Launchers are POSIX only, so use `ccsw run NAME` there.
 - **Claude Desktop:** the docs describe a separate sign-in flow and a model picker built from the account. This plugin does not switch Desktop accounts. Its commands and hooks load, but the login swap targets the CLI's files.
 - **State drift:** an isolated directory gets its own copy of `.claude.json`. Project state there can drift from the main one.
 - **Tokens on disk:** profiles hold refresh tokens. Treat `~/.config/account-switch` and `~/.claude-*` like `~/.claude/.credentials.json`.

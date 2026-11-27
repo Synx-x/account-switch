@@ -1,6 +1,6 @@
 # Isolation
 
-An isolated directory `~/.claude-<name>` has its own login and symlinks the rest to the main config directory.
+An isolated directory `~/.claude-NAME` has its own login and symlinks the rest to the main config directory.
 
 - Create `.credentials.json` there once. Never overwrite it, because Claude Code rotates the token in place.
 - Skip the entries in `ISOLATE_SKIP`. They are login state and per-process runtime files.

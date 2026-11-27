@@ -64,7 +64,7 @@ Keep `bin/ccsw` one file with no third-party imports. Fail with `die()` and a me
 
 ## Adding things
 
-- **A new command:** add a function in `bin/ccsw`, route it in `main`, add `commands/<name>.md`, and add a test.
+- **A new command:** add a function in `bin/ccsw`, route it in `main`, add `commands/NAME.md`, and add a test.
 - **A new setting:** add it to `userConfig` in `.claude-plugin/plugin.json`, read it with `opt()`, and list it in `.env.example`.
 
 ## Tooling

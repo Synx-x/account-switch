@@ -12,9 +12,9 @@ description: Use when the user wants to switch Claude Code between saved claude.
 | The user wants | Run |
 |---|---|
 | See what is live | `/account-switch:status` |
-| Save the current login | `/account-switch:save <name>` |
-| Change every session's account | `/account-switch:switch <name>` |
-| Move only this conversation | `/account-switch:switch <name> --session` |
+| Save the current login | `/account-switch:save NAME` |
+| Change every session's account | `/account-switch:switch NAME` |
+| Move only this conversation | `/account-switch:switch NAME --session` |
 | Rebuild the `/model` list | `/account-switch:models` |
 
 ## Rules

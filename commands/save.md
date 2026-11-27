@@ -1,6 +1,6 @@
 ---
 description: Save the current claude.ai login as a named profile.
-argument-hint: <name>
+argument-hint: NAME
 allowed-tools: Bash(python3 ${CLAUDE_PLUGIN_ROOT}/bin/ccsw:*)
 ---
 
